@@ -1035,14 +1035,6 @@ CNNs extract spatial hierarchies of patterns. Applied to network features (treat
 
 ---
 
-## Academic Context
-
-This implementation is a **B.Tech major project** prototype demonstrating the feasibility of hybrid deep learning architectures for cybercrime pattern recognition. It is based on published research in the field of AI-driven digital forensics and implements the core concepts described in the referenced paper.
-
-The system is a **proof-of-concept** and is not intended for production forensic use without further validation, legal review, and adversarial robustness testing.
-
----
-
 <div align="center">
   <sub> Real UNSW-NB15 Data · 86.09% Validation Accuracy</sub>
 </div>
