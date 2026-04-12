@@ -1,0 +1,23 @@
+.button {
+  display: inline-block;
+  padding: 0.75rem 1.5rem;
+  font-size: 1rem;
+  font-weight: 700;
+  color: #fff;
+  background-color: rgb(var(--primary-rgb));
+  border: none;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  transition: background-color 0.2s ease-in-out;
+  text-decoration: none;
+  text-align: center;
+}
+
+.button:hover {
+  background-color: rgb(var(--primary-hover-rgb));
+}
+
+.button:disabled {
+  background-color: rgb(var(--muted-rgb));
+  cursor: not-allowed;
+}

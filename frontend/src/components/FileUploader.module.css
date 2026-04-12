@@ -1,0 +1,55 @@
+.container {
+  width: 100%;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 2rem;
+  margin-bottom: 2rem;
+}
+
+@media (min-width: 768px) {
+  .grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.dropzone {
+  border: 2px dashed rgb(var(--border-rgb));
+  border-radius: 0.75rem;
+  padding: 2rem;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.2s, background-color 0.2s;
+  height: 12rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.dropzone.active {
+  border-color: rgb(var(--primary-rgb));
+  background-color: rgba(var(--primary-rgb), 0.1);
+}
+
+.dropzone svg {
+  color: rgb(var(--muted-rgb));
+  margin-bottom: 1rem;
+}
+
+.dropzone p {
+  color: rgb(var(--muted-rgb));
+  margin: 0;
+}
+
+.fileName {
+  font-size: 1.125rem;
+  color: rgb(var(--primary-rgb));
+  font-weight: bold;
+}
+
+.buttonContainer {
+  text-align: center;
+}

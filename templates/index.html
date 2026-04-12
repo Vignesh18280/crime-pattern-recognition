@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Intelligent Crime Pattern Recognition</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Intelligent Crime Pattern Recognition</h1>
+            <p>Hybrid Siamese · CNN · Bidirectional LSTM Architecture for Cybercrime MO Detection</p>
+        </header>
+
+        <main>
+            <div class="controls">
+                <div class="input-group">
+                    <div class="pattern-selector">
+                        <h2>Crime Pattern A</h2>
+                        <select id="category1" class="category-select"></select>
+                        <p class="or-separator">OR</p>
+                        <div id="drop-zone-1" class="drop-zone">
+                            Drag & Drop File 1 (5 events)
+                            <input type="file" id="file-input-1" class="file-input" accept=".csv,.parquet">
+                        </div>
+                        <div id="upload-status-1" class="upload-status"></div>
+                        <button class="generate-btn" data-pattern="1">Generate Random Pattern</button>
+                    </div>
+                </div>
+                <div class="vs">VS</div>
+                <div class="input-group">
+                    <div class="pattern-selector">
+                        <h2>Crime Pattern B</h2>
+                        <select id="category2" class="category-select"></select>
+                        <p class="or-separator">OR</p>
+                        <div id="drop-zone-2" class="drop-zone">
+                            Drag & Drop File 2 (5 events)
+                            <input type="file" id="file-input-2" class="file-input" accept=".csv,.parquet">
+                        </div>
+                        <div id="upload-status-2" class="upload-status"></div>
+                        <button class="generate-btn" data-pattern="2">Generate Random Pattern</button>
+                    </div>
+                </div>
+            </div>
+            <div class="button-container">
+                <button id="compareBtn">Compare Patterns</button>
+            </div>
+        </main>
+
+        <section id="results" class="hidden">
+            <h2>Analysis Results</h2>
+            <div class="results-summary">
+                <div id="verdict" class="verdict-card"></div>
+                <div class="score-card">
+                    <h3>Similarity Score</h3>
+                    <p id="similarityScore"></p>
+                </div>
+            </div>
+            <div class="explanation">
+                <h3>Prediction Explanation (Feature Importance)</h3>
+                <p>Top features influencing the model's decision. Positive bars indicate features pushing towards 'SAME MO', negative bars towards 'DIFFERENT MO'.</p>
+                <canvas id="shapChart"></canvas>
+            </div>
+        </section>
+
+        <div id="loader" class="hidden">
+            <div class="spinner"></div>
+            <p>Analyzing... This may take a moment.</p>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

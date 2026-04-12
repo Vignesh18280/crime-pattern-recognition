@@ -1,0 +1,33 @@
+:root {
+  --font-sans: 'Inter', sans-serif;
+  --font-mono: 'Fira Code', 'Courier New', monospace;
+
+  --background-rgb: 22, 23, 29; /* #16171d */
+  --foreground-rgb: 210, 210, 210; /* #d2d2d2 */
+  --muted-rgb: 128, 128, 128; /* #808080 */
+  
+  --primary-rgb: 192, 132, 252; /* #c084fc - A nice purple */
+  --primary-hover-rgb: 172, 112, 232;
+
+  --card-rgb: 31, 32, 40; /* #1f2028 */
+  --border-rgb: 46, 48, 58; /* #2e303a */
+
+  --success-rgb: 34, 197, 94; /* green-500 */
+  --danger-rgb: 239, 68, 68; /* red-500 */
+}
+
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code&family=Inter:wght@400;700;900&display=swap');
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-sans);
+  background-color: rgb(var(--background-rgb));
+  color: rgb(var(--foreground-rgb));
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
