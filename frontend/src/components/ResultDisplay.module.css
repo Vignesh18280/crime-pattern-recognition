@@ -1,5 +1,9 @@
 .card {
   animation: fadeIn 1s ease-in-out;
+  background-color: rgb(var(--card-rgb));
+  border: 1px solid rgb(var(--border-rgb));
+  border-radius: 0.75rem;
+  padding: 2rem;
 }
 
 @keyframes fadeIn {
@@ -8,12 +12,14 @@
 }
 
 .header {
-  margin-bottom: 1rem;
+  margin-bottom: 2rem;
+  text-align: center;
 }
 
 .header h2 {
-  font-size: 1.875rem;
+  font-size: 2rem;
   font-weight: 700;
+  color: rgb(var(--primary-rgb));
   margin: 0;
 }
 
@@ -44,8 +50,9 @@
   align-items: center;
   justify-content: center;
   padding: 2rem;
-  background-color: rgba(var(--card-rgb), 0.7);
-  border-radius: 0.5rem;
+  background: linear-gradient(135deg, rgba(var(--primary-rgb), 0.1), rgba(var(--card-rgb), 0.5));
+  border: 2px solid rgb(var(--primary-rgb));
+  border-radius: 1rem;
   text-align: center;
 }
 
@@ -59,15 +66,11 @@
   font-size: 1.5rem;
   font-weight: 700;
   margin-top: 0.5rem;
+  text-transform: uppercase;
 }
 
-.sameMO {
-  color: rgb(var(--danger-rgb));
-}
-
-.differentMO {
-  color: rgb(var(--success-rgb));
-}
+.sameMO { color: #ef4444; }
+.differentMO { color: #22c55e; }
 
 .verdictDescription {
   font-size: 0.875rem;
@@ -80,4 +83,123 @@
   font-size: 1.25rem;
   font-weight: 700;
   margin-bottom: 1.5rem;
+}
+
+/* === NEW DETAIL SECTION === */
+
+.detailSection {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  margin-top: 2rem;
+  border-top: 1px solid rgb(var(--border-rgb));
+  padding-top: 2rem;
+}
+
+.detailSection h2 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: rgb(var(--primary-rgb));
+  margin: 0 0 1rem 0;
+  text-align: center;
+}
+
+/* Stats Grid */
+.statsGrid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1rem;
+}
+
+@media (max-width: 600px) {
+  .statsGrid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.statCard {
+  background: rgba(var(--primary-rgb), 0.1);
+  border: 1px solid rgb(var(--border-rgb));
+  border-radius: 0.5rem;
+  padding: 1rem;
+  text-align: center;
+}
+
+.statLabel {
+  font-size: 0.7rem;
+  color: rgb(var(--muted-rgb));
+  text-transform: uppercase;
+}
+
+.statValue {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: rgb(var(--primary-rgb));
+  margin-top: 0.25rem;
+}
+
+/* Summary Text */
+.summaryBox {
+  background: rgba(var(--background-rgb), 0.5);
+  border: 1px solid rgb(var(--border-rgb));
+  border-radius: 0.5rem;
+  padding: 1rem;
+  text-align: center;
+  font-size: 0.9rem;
+  color: rgb(var(--foreground-rgb));
+  line-height: 1.6;
+}
+
+.summaryBox strong {
+  color: rgb(var(--primary-rgb));
+}
+
+/* Table */
+.tableWrapper {
+  overflow-x: auto;
+  background: rgba(var(--background-rgb), 0.5);
+  border: 1px solid rgb(var(--border-rgb));
+  border-radius: 0.5rem;
+}
+
+.dataTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+}
+
+.dataTable th, .dataTable td {
+  padding: 0.5rem;
+  text-align: center;
+  border-bottom: 1px solid rgb(var(--border-rgb));
+}
+
+.dataTable th {
+  background: rgba(var(--primary-rgb), 0.2);
+  color: rgb(var(--primary-rgb));
+  font-weight: 600;
+}
+
+.dataTable td {
+  font-family: monospace;
+}
+
+.dataTable tr:hover td {
+  background: rgba(var(--primary-rgb), 0.05);
+}
+
+/* Chart Card */
+.chartCard {
+  background: rgba(var(--background-rgb), 0.5);
+  border: 1px solid rgb(var(--border-rgb));
+  border-radius: 0.5rem;
+  padding: 1rem;
+}
+
+.chartCard h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: rgb(var(--foreground-rgb));
+  margin: 0 0 1rem 0;
+  text-align: center;
 }

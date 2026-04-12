@@ -13,6 +13,7 @@ import uuid # For unique filenames
 # Assuming model.py and dataset.py are in the src directory
 from src.model import SiameseCrimeMatcher
 from src.detect import detect_suspicious_connections
+from src.pattern_generator import generate_multiple_crime_patterns
 
 
 # --- Configuration ---
@@ -116,7 +117,7 @@ def generate_dummy_pattern_data(base_category=None):
 def process_incident_log(file_path):
     """
     Loads a raw incident log file (CSV/Parquet), detects suspicious connections,
-    extracts the first 5 to form a crime pattern, preprocesses it, and returns a tensor.
+    generates multiple 5-event crime patterns, preprocesses them, and returns a list of tensors.
     """
     if scaler is None:
         return None, ["Scaler not loaded. Cannot process uploaded data."]
@@ -129,39 +130,40 @@ def process_incident_log(file_path):
         else:
             return None, ["Invalid file type. Only CSV and Parquet are allowed."]
 
-        # --- New Anomaly Detection Step ---
+        # --- Anomaly Detection ---
         suspicious_df = detect_suspicious_connections(df)
 
         if len(suspicious_df) < 5:
-            return None, [f"Found only {len(suspicious_df)} suspicious connections. At least 5 are required to form a crime pattern."]
+            return None, [f"Found only {len(suspicious_df)} suspicious connections. At least 5 are required."]
 
-        # Take the first 5 suspicious events to form the pattern
-        pattern_df = suspicious_df.head(5)
+        # --- Generate Multiple 5-event Patterns ---
+        raw_patterns = generate_multiple_crime_patterns(suspicious_df, window_size=5, stride=1)
         
-        # --- Continue with existing preprocessing ---
-        feature_df = pattern_df.select_dtypes(include=[np.number])
-        feature_df = feature_df.replace([np.inf, -np.inf], np.nan).fillna(0)
+        if not raw_patterns:
+            return None, ["Could not generate any 5-event crime patterns."]
 
-        if feature_df.empty:
-            return None, ["No numeric features found in the detected suspicious connections."]
-        
-        X = feature_df.values.astype(np.float32)
-        
-        final_feature_names = list(feature_df.columns)
+        processed_pattern_tensors = []
+        final_feature_names = []
 
-        if X.shape[1] < feature_dim:
-            pad = np.zeros((X.shape[0], feature_dim - X.shape[1]), dtype=np.float32)
-            X   = np.hstack([X, pad])
-            final_feature_names += [f"pad_{i}" for i in range(feature_dim - len(final_feature_names))]
-        elif X.shape[1] > feature_dim:
-            X   = X[:, :feature_dim]
-            final_feature_names = final_feature_names[:feature_dim]
+        for raw_pattern_np in raw_patterns:
+            X = raw_pattern_np.astype(np.float32)
+            temp_feature_df = pd.DataFrame(X).iloc[:, :32] # Simplified for demo
+            
+            current_feature_names = [f"feature_{i}" for i in range(X.shape[1])]
+            
+            if X.shape[1] < feature_dim:
+                pad = np.zeros((X.shape[0], feature_dim - X.shape[1]), dtype=np.float32)
+                X   = np.hstack([X, pad])
+            elif X.shape[1] > feature_dim:
+                X   = X[:, :feature_dim]
+            
+            X = scaler.transform(X)
+            processed_pattern_tensors.append(torch.tensor(X, dtype=torch.float32).unsqueeze(0))
+            
+            if not final_feature_names: 
+                final_feature_names = current_feature_names[:feature_dim]
 
-        # Apply scaler 
-        X = scaler.transform(X)
-
-        pattern_tensor = torch.tensor(X, dtype=torch.float32).unsqueeze(0) # Add batch dimension
-        return pattern_tensor, final_feature_names
+        return processed_pattern_tensors, final_feature_names
 
     except Exception as e:
         return None, [f"Error processing incident log: {e}"]
@@ -304,41 +306,89 @@ def predict():
             errors.extend(feature_names2)
 
     if errors:
-        # Clean up the temporary files
         if os.path.exists(file_path1): os.remove(file_path1)
         if os.path.exists(file_path2): os.remove(file_path2)
         return jsonify({"error": " ".join(errors)}), 400
 
-    if pattern1 is None or pattern2 is None:
+    if not pattern1 or not pattern2:
         return jsonify({"error": "Could not process one or both incident logs into valid crime patterns."}), 400
 
-    pattern1, pattern2 = pattern1.to(DEVICE), pattern2.to(DEVICE)
+    # --- Best-Match Comparison ---
+    max_similarity_score = -1.0
+    best_p1_tensor = None
+    best_p2_tensor = None
+    best_p1_idx = 0
+    best_p2_idx = 0
 
     with torch.no_grad():
-        similarity_score = model.compute_similarity(pattern1, pattern2).item()
+        for idx1, p1 in enumerate(pattern1):
+            for idx2, p2 in enumerate(pattern2):
+                p1dev = p1.to(DEVICE)
+                p2dev = p2.to(DEVICE)
+                score = model.compute_similarity(p1dev, p2dev).item()
+                if score > max_similarity_score:
+                    max_similarity_score = score
+                    best_p1_tensor = p1
+                    best_p2_tensor = p2
+                    best_p1_idx = idx1
+                    best_p2_idx = idx2
 
-    verdict = "SAME MO" if similarity_score >= 0.5 else "DIFFERENT MO"
+    verdict = "SAME MO" if max_similarity_score >= 0.5 else "DIFFERENT MO"
 
-    # Clean up the temporary files after successful prediction
+    # Convert best patterns back to raw values for display
+    best_p1_data = []
+    best_p2_data = []
+    if best_p1_tensor is not None and best_p2_tensor is not None:
+        # Remove batch dimension and move to CPU
+        p1_np = best_p1_tensor.squeeze(0).cpu().numpy()
+        p2_np = best_p2_tensor.squeeze(0).cpu().numpy()
+        
+        # Inverse transform to get raw values
+        try:
+            p1_raw = scaler.inverse_transform(p1_np)
+            p2_raw = scaler.inverse_transform(p2_np)
+        except Exception:
+            p1_raw = p1_np
+            p2_raw = p2_np
+        
+        # Fallback: if all zeros, use raw values
+        if np.all(p1_raw == 0):
+            p1_raw = p1_np
+        if np.all(p2_raw == 0):
+            p2_raw = p2_np
+        
+        # Take first 10 features from first row of each pattern
+        max_features = 10
+        p1_row = p1_raw[0, :max_features] if p1_raw.shape[1] >= max_features else np.pad(p1_raw[0, :], (0, max_features - p1_raw.shape[1]))
+        p2_row = p2_raw[0, :max_features] if p2_raw.shape[1] >= max_features else np.pad(p2_raw[0, :], (0, max_features - p2_raw.shape[1]))
+        best_p1_data = [round(float(v), 4) for v in p1_row]
+        best_p2_data = [round(float(v), 4) for v in p2_row]
+
+    # Cleanup
     if os.path.exists(file_path1): os.remove(file_path1)
     if os.path.exists(file_path2): os.remove(file_path2)
 
-    # For the explanation, we can use the feature names from the first pattern as they should be consistent
-    explanation_features = feature_names1
+    # Generate explanation (dummy for now)
     explanation = []
-    for name in explanation_features:
+    for name in feature_names1:
         explanation.append({
             "feature": name,
-            "importance": random.uniform(-0.5, 0.5) # Still dummy importance
+            "importance": random.uniform(-0.5, 0.5)
         })
     explanation = sorted(explanation, key=lambda x: abs(x['importance']), reverse=True)
 
     return jsonify({
         "verdict": verdict,
-        "similarityScore": similarity_score,
+        "similarityScore": max_similarity_score,
         "incident1": uploaded_file1,
         "incident2": uploaded_file2,
-        "explanation": explanation[:20] # Return top 20 features
+        "explanation": explanation[:20],
+        "best_patterns": {
+            "pattern1_index": best_p1_idx,
+            "pattern2_index": best_p2_idx,
+            "pattern1_data": best_p1_data,
+            "pattern2_data": best_p2_data
+        }
     })
 
 
