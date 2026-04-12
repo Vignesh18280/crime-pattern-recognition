@@ -265,8 +265,6 @@ Choose a topic based on your interest:
 - Framework: **PyTorch 2.0**
 - Architecture: Hybrid CNN + Bi-LSTM + Siamese Network
 
-This is a **B.Tech major project** proof-of-concept. Not intended for production forensic use without further validation.
-
 ---
 
 <div align="center">
