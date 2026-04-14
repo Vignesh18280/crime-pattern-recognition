@@ -518,7 +518,7 @@ def predict_multimodal():
         bin_emb_a = model.binary_extractor(bin_a.to(DEVICE))
         bin_emb_b = model.binary_extractor(bin_b.to(DEVICE))
         
-        log_diff = (log_a - log_b).abs().mean().item()
+        log_diff = (log_emb_a - log_emb_b).abs().mean().item()
         img_diff = (img_emb_a - img_emb_b).abs().mean().item()
         bin_diff = (bin_emb_a - bin_emb_b).abs().mean().item()
         
@@ -716,4 +716,4 @@ def predict():
 
 if __name__ == '__main__':
     from waitress import serve
-    serve(app, host="0.0.0.0", port=5000)
+    serve(app, host="0.0.0.0", port=5002)
