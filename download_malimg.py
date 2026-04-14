@@ -32,12 +32,40 @@ def download_unsk_nb15(api):
         print(f"[download] UNSW-NB15 exists: {parquet_path}")
         return
     
-    print("[download] Downloading UNSW-NB15...")
+    # Try different Kaggle datasets
+    datasets_to_try = [
+        'alextamboli/unsw-nb15',
+        'mrwellsdavid/unsw-nb15',
+    ]
+    
+    for dataset in datasets_to_try:
+        try:
+            print(f"[download] Trying: {dataset}")
+            api.dataset_download_files(dataset, path=DATA_DIR, unzip=True)
+            print(f"[download] Downloaded: {dataset}")
+            return
+        except Exception as e:
+            print(f"[download] {dataset} failed: {e}")
+            continue
+    
+print("[download] All Kaggle failed, trying HuggingFace...")
     try:
-        api.dataset_download_files('mhmadabdalhamid/unsw-nb15', path=DATA_DIR, unzip=True)
-        print(f"[download] Downloaded UNSW-NB15")
+        from datasets import load_dataset
+        
+        # Load temporal (standard) split - ~175K train, ~82K test
+        print("[download] Loading UNSW-NB15 from HuggingFace...")
+        ds = load_dataset("lacg030175/UNSW-NB15", "temporal")
+        
+        # Save training and test sets as parquet
+        train_path = os.path.join(DATA_DIR, "UNSW_NB15_training-set.parquet")
+        test_path = os.path.join(DATA_DIR, "UNSW_NB15_testing-set.parquet")
+        
+        ds["train"].to_parquet(train_path)
+        ds["test"].to_parquet(test_path)
+        
+        print(f"[download] HuggingFace UNSW-NB15: {len(ds['train'])} train, {len(ds['test'])} test rows")
     except Exception as e:
-        print(f"[download] UNSW-NB15 failed: {e}")
+        print(f"[download] HuggingFace failed: {e}")
 
 
 def download_malimg(api):

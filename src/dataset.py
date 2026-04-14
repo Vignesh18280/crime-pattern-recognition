@@ -331,13 +331,23 @@ class MultiModalCrimeDataset(Dataset):
     def _generate_log_from_unsk(self, attack_type):
         """Generate log sequence from real UNSW-NB15 data for given attack type."""
         parquet_path = os.path.join(self.data_dir, "UNSW_NB15_training-set.parquet")
+        csv_path = os.path.join(self.data_dir, "UNSW_NB15_training-set.csv")
         
         try:
-            df = pd.read_parquet(parquet_path)
-            attack_df = df[df['attack_cat'] == attack_type]
+            # Try parquet first, then CSV
+            if os.path.exists(parquet_path):
+                df = pd.read_parquet(parquet_path)
+            elif os.path.exists(csv_path):
+                df = pd.read_csv(csv_path, low_memory=False)
+            else:
+                raise FileNotFoundError("No UNSW-NB15 file found")
             
-            if len(attack_df) == 0:
+            # Handle attack type - match to available categories
+            available_cats = df['attack_cat'].unique() if 'attack_cat' in df.columns else []
+            if attack_type not in available_cats and len(available_cats) > 0:
                 attack_df = df[df['attack_cat'] != 'Normal'].sample(min(100, len(df[df['attack_cat'] != 'Normal'])))
+            else:
+                attack_df = df[df['attack_cat'] == attack_type]
             
             # Drop non-numeric columns
             drop_cols = ['id', 'srcip', 'sport', 'dstip', 'dsport', 'proto', 'state', 'service', 'attack_cat', 'label', 'is_sm_ips_ports']
@@ -418,18 +428,30 @@ def build_dataloaders(batch_size=32, test_size=0.2):
     """
     # First, load and scale the UNSW-NB15 data to create a scaler
     parquet_path = os.path.join(DATA_DIR, "UNSW_NB15_training-set.parquet")
+    csv_path = os.path.join(DATA_DIR, "UNSW_NB15_training-set.csv")
     scaler = None
     
     try:
         print("[dataset] Loading UNSW-NB15 for scaler...")
-        df = pd.read_parquet(parquet_path)
+        df = None
+        
+        # Try parquet first, then CSV
+        if os.path.exists(parquet_path):
+            df = pd.read_parquet(parquet_path)
+        elif os.path.exists(csv_path):
+            df = pd.read_csv(csv_path, low_memory=False)
+        else:
+            raise FileNotFoundError("No UNSW-NB15 file found")
+        
+        # Get numeric columns
         drop_cols = ['id', 'srcip', 'sport', 'dstip', 'dsport', 'proto', 'state', 'service', 'attack_cat', 'label', 'is_sm_ips_ports']
         feature_cols = [c for c in df.columns if c not in drop_cols and df[c].dtype in ['int64', 'float64']]
+        
         X_all = df[feature_cols].fillna(0).values.astype(np.float32)
         
         scaler = StandardScaler()
-        scaler.fit(X_all[:10000])  # Fit on subset for speed
-        print("[dataset] Scaler created from UNSW-NB15")
+        scaler.fit(X_all[:10000])
+        print(f"[dataset] Scaler created from UNSW-NB15 ({len(df)} rows)")
     except Exception as e:
         print(f"[dataset] Warning: Could not create scaler: {e}")
     
