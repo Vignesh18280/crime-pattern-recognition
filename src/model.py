@@ -25,6 +25,156 @@ Architecture flow:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision.models as models
+
+
+# ─── MODALITY EXTRACTORS ────────────────────────────────────────────────────────
+# Each extractor is a specialized neural network responsible for converting
+# one type of data (logs, images, binaries) into a fixed-size embedding vector.
+# ────────────────────────────────────────────────────────────────────────────────
+
+class LogExtractor(nn.Module):
+    """
+    Processes a sequence of network log events using a CNN to find spatial
+    patterns within each event, followed by a Bi-LSTM to model the
+    temporal sequence of the entire attack chain.
+    """
+    def __init__(self, feature_dim=31, seq_len=5, cnn_out_dim=128, mo_dim=256):
+        super().__init__()
+        self.cnn = nn.Sequential(
+            nn.Conv1d(1, 32, 3, padding=1), nn.ReLU(), nn.BatchNorm1d(32),
+            nn.Conv1d(32, 64, 3, padding=1), nn.ReLU(), nn.BatchNorm1d(64),
+            nn.Conv1d(64, 128, 3, padding=1), nn.ReLU(), nn.BatchNorm1d(128),
+            nn.AdaptiveAvgPool1d(4)
+        )
+        self.cnn_fc = nn.Linear(128 * 4, cnn_out_dim)
+        
+        self.lstm = nn.LSTM(cnn_out_dim, cnn_out_dim // 2, 2, batch_first=True, bidirectional=True, dropout=0.3)
+        self.lstm_fc = nn.Linear(cnn_out_dim, mo_dim)
+        self.dropout = nn.Dropout(0.3)
+
+    def forward(self, x):
+        # x shape: (batch, seq_len, feature_dim)
+        batch_size, seq_len, feat_dim = x.shape
+        
+        # CNN processing
+        x_flat = x.view(batch_size * seq_len, 1, feat_dim)
+        cnn_out = self.cnn(x_flat)
+        cnn_out = cnn_out.flatten(1)
+        fingerprints = F.relu(self.cnn_fc(self.dropout(cnn_out)))
+        fingerprints_seq = fingerprints.view(batch_size, seq_len, -1)
+        
+        # LSTM processing
+        lstm_out, (hidden, _) = self.lstm(fingerprints_seq)
+        last_out = lstm_out[:, -1, :]
+        
+        # Final embedding
+        mo_vec = F.relu(self.lstm_fc(self.dropout(last_out)))
+        return mo_vec
+
+class HybridImageExtractor(nn.Module):
+    """
+    Processes visual evidence for an incident. It intelligently handles a
+    mix of timestamped (sequential) and non-timestamped (static) images.
+    """
+    def __init__(self, embedding_dim=512):
+        super().__init__()
+        self.embedding_dim = embedding_dim
+
+        # --- Sub-Branch 1: Sequential Extractor (for timestamped images) ---
+        # This branch uses a CNN+LSTM architecture to understand temporal stories.
+        self.sequential_cnn = self._create_cnn_branch(embedding_dim=256)
+        self.sequential_lstm = nn.LSTM(input_size=256, hidden_size=256, bidirectional=True, batch_first=True)
+
+        # --- Sub-Branch 2: Static Extractor (for unordered images) ---
+        # This branch uses a CNN+Pooling architecture to find key evidence in a set.
+        self.static_cnn = self._create_cnn_branch(embedding_dim=256)
+
+        # --- Final Fusion Layer ---
+        # This layer combines the knowledge from both branches.
+        # Input size is 512 (sequential LSTM's bidirectional output) + 256 (static CNN's output)
+        self.fusion_layer = nn.Sequential(
+            nn.Linear(512 + 256, 512),
+            nn.ReLU(),
+            nn.Dropout(0.4),
+            nn.Linear(512, self.embedding_dim)
+        )
+
+    def _create_cnn_branch(self, embedding_dim):
+        """Helper to create a ResNet-based feature extractor."""
+        resnet = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+        num_ftrs = resnet.fc.in_features
+        features = nn.Sequential(*list(resnet.children())[:-1])
+        fc = nn.Linear(num_ftrs, embedding_dim)
+        return nn.Sequential(features, nn.Flatten(1), fc)
+
+    def forward(self, timed_images, static_images):
+        """
+        timed_images: (batch, seq_len, 3, H, W) - A sequence of images with timestamps.
+        static_images: (batch, set_size, 3, H, W) - A set of unordered images.
+        """
+        # --- Process Sequential Branch ---
+        # Check if there is actual data to process to avoid errors on empty tensors
+        if timed_images.nelement() > 0:
+            batch_size, seq_len, c, h, w = timed_images.shape
+            timed_flat = timed_images.view(batch_size * seq_len, c, h, w)
+            seq_cnn_out = self.sequential_cnn(timed_flat)
+            seq_cnn_out_reshaped = seq_cnn_out.view(batch_size, seq_len, -1)
+            _, (hidden, _) = self.sequential_lstm(seq_cnn_out_reshaped)
+            sequential_embedding = torch.cat((hidden[0], hidden[1]), dim=1)
+        else:
+            # If no timed images, use a zero-vector placeholder
+            sequential_embedding = torch.zeros(timed_images.shape[0], 512, device=timed_images.device)
+
+        # --- Process Static Branch ---
+        if static_images.nelement() > 0:
+            batch_size, set_size, c, h, w = static_images.shape
+            static_flat = static_images.view(batch_size * set_size, c, h, w)
+            static_cnn_out = self.static_cnn(static_flat)
+            static_cnn_out_reshaped = static_cnn_out.view(batch_size, set_size, -1)
+            # Max-pooling across the set of images
+            static_embedding, _ = torch.max(static_cnn_out_reshaped, dim=1)
+        else:
+            # If no static images, use a zero-vector placeholder
+            static_embedding = torch.zeros(static_images.shape[0], 256, device=static_images.device)
+
+        # --- Final Fusion ---
+        combined_embedding = torch.cat((sequential_embedding, static_embedding), dim=1)
+        final_image_embedding = self.fusion_layer(combined_embedding)
+        
+        return final_image_embedding
+
+
+class BinaryExtractor(nn.Module):
+    """
+    Processes an executable binary file, which has been converted to a
+    grayscale image. It uses a pre-trained ResNet to extract features
+    from the binary's visual texture and structure.
+    """
+    def __init__(self, embedding_dim=256):
+        super().__init__()
+        # Use a pretrained ResNet, but modify it for grayscale input
+        # and a custom output embedding dimension.
+        resnet = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+        
+        # Original first layer: Conv2d(3, 64, ...). We need Conv2d(1, 64, ...).
+        # We can average the weights of the original first layer across the R,G,B channels.
+        original_weights = resnet.conv1.weight.clone()
+        resnet.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        resnet.conv1.weight.data = original_weights.mean(dim=1, keepdim=True)
+
+        # Replace the final classification layer with our own embedding layer
+        num_ftrs = resnet.fc.in_features
+        self.features = nn.Sequential(*list(resnet.children())[:-1])
+        self.fc = nn.Linear(num_ftrs, embedding_dim)
+
+    def forward(self, x):
+        # x shape: (batch, 1, height, width) - grayscale image
+        x = self.features(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+        return x
+
 
 
 # ─── CNN FEATURE EXTRACTOR ────────────────────────────────────────────────────
@@ -165,132 +315,91 @@ class BiLSTMModeler(nn.Module):
         return mo_vec                               # the MO vector
 
 
-# ─── TWIN SUBNETWORK ──────────────────────────────────────────────────────────
-
-class TwinSubNetwork(nn.Module):
-    """
-    One twin of the Siamese Network.
-    Combines CNN + Bi-LSTM to convert a raw crime pattern
-    into an abstract MO vector.
-
-    Pipeline:
-        crime pattern (seq_len, features)
-            → CNN processes each artifact individually
-            → sequence of fingerprints (seq_len, cnn_out_dim)
-            → Bi-LSTM reads the full sequence
-            → single MO vector (mo_dim,)
-    """
-
-    def __init__(self, feature_dim=64, cnn_out_dim=128, mo_dim=256):
-        super(TwinSubNetwork, self).__init__()
-
-        self.cnn  = CNNExtractor(feature_dim=feature_dim,
-                                 cnn_out_dim=cnn_out_dim)
-        self.lstm = BiLSTMModeler(input_dim=cnn_out_dim,
-                                  mo_dim=mo_dim)
-
-    def forward(self, x):
-        """
-        x shape: (batch, seq_len, feature_dim)
-        """
-        batch, seq_len, feat_dim = x.shape
-
-        # ── Step 1: CNN processes each artifact independently ──
-        # Reshape so CNN sees each artifact as its own sample
-        x_flat = x.reshape(batch * seq_len, feat_dim)   # (batch*seq_len, feat_dim)
-
-        # CNN extracts fingerprint from each artifact
-        fingerprints = self.cnn(x_flat)                 # (batch*seq_len, cnn_out_dim)
-
-        # Reshape back to sequence form
-        fingerprints = fingerprints.reshape(batch, seq_len, -1)  # (batch, seq_len, cnn_out_dim)
-
-        # ── Step 2: Bi-LSTM reads the sequence of fingerprints ──
-        mo_vector = self.lstm(fingerprints)              # (batch, mo_dim)
-
-        return mo_vector
-
-
 # ─── SIAMESE NETWORK ──────────────────────────────────────────────────────────
 
 class SiameseCrimeMatcher(nn.Module):
     """
-    Full Siamese Network for cybercrime MO matching.
-
-    Takes TWO crime patterns as input.
-    Both pass through IDENTICAL twin subnetworks (shared weights).
-    Distance between their MO vectors = similarity score.
-
-    High similarity → same threat actor / same MO
-    Low  similarity → unrelated crimes
-
-    This is the main model class used for training and inference.
+    The main multi-modal Siamese Network. It takes two incidents, each with
+    potentially multiple data types (logs, images, binaries), processes them
+    through specialized extractors, fuses the results, and compares the final
+    MO vectors to compute a similarity score.
     """
+    def __init__(self, log_feature_dim=31, log_seq_len=5,
+                 log_embedding_dim=256, image_embedding_dim=512, binary_embedding_dim=256,
+                 fused_embedding_dim=512):
+        super().__init__()
 
-    def __init__(self, feature_dim=64, cnn_out_dim=128, mo_dim=256):
-        super(SiameseCrimeMatcher, self).__init__()
+        # --- Instantiate Modular Extractors ---
+        self.log_extractor = LogExtractor(feature_dim=log_feature_dim, mo_dim=log_embedding_dim)
+        self.image_extractor = HybridImageExtractor(embedding_dim=image_embedding_dim)
+        self.binary_extractor = BinaryExtractor(embedding_dim=binary_embedding_dim)
 
-        # Single twin subnetwork — shared weights means we use
-        # the SAME instance for both inputs (not two separate instances)
-        self.twin = TwinSubNetwork(
-            feature_dim  = feature_dim,
-            cnn_out_dim  = cnn_out_dim,
-            mo_dim       = mo_dim
+        # --- Top-Level Fusion Layer ---
+        # This layer combines the outputs from all modality extractors.
+        total_embedding_dim = log_embedding_dim + image_embedding_dim + binary_embedding_dim
+        self.fusion_layer = nn.Sequential(
+            nn.Linear(total_embedding_dim, total_embedding_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(total_embedding_dim // 2, fused_embedding_dim)
         )
 
-        # Final classifier head
-        # Takes absolute difference of MO vectors → similarity score
+        # --- Final Classifier Head ---
+        # This takes the absolute difference between the two fused MO vectors
+        # and outputs the final similarity score (0.0 to 1.0).
         self.classifier = nn.Sequential(
-            nn.Linear(mo_dim, 128),
+            nn.Linear(fused_embedding_dim, fused_embedding_dim // 2),
             nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(128, 64),
-            nn.ReLU(),
-            nn.Linear(64, 1),
-            nn.Sigmoid()            # output between 0 and 1
+            nn.Dropout(0.5),
+            nn.Linear(fused_embedding_dim // 2, 1),
+            nn.Sigmoid()
         )
 
-    def forward_one(self, x):
-        """Process a single crime pattern through the twin subnetwork."""
-        return self.twin(x)
-
-    def forward(self, pattern_a, pattern_b):
+    def forward_one(self, log_data, timed_images, static_images, binary_data):
         """
-        pattern_a : (batch, seq_len, feature_dim) — Crime Pattern 1
-        pattern_b : (batch, seq_len, feature_dim) — Crime Pattern 2
-
-        Both go through the SAME twin (shared weights).
-        This is the key Siamese principle.
+        Processes a single, complete incident through all modality extractors
+        and fuses the results into a single MO vector.
         """
-        # Both patterns through same twin → MO vectors
-        mo_vec_a = self.forward_one(pattern_a)     # (batch, mo_dim)
-        mo_vec_b = self.forward_one(pattern_b)     # (batch, mo_dim)
+        # Get embedding from each extractor
+        log_embedding = self.log_extractor(log_data)
+        image_embedding = self.image_extractor(timed_images, static_images)
+        binary_embedding = self.binary_extractor(binary_data)
 
-        # Absolute difference captures how different the two MOs are
-        # Small difference → similar MO → high similarity score
-        diff = torch.abs(mo_vec_a - mo_vec_b)      # (batch, mo_dim)
+        # Concatenate all embeddings for late fusion
+        combined_embeddings = torch.cat([log_embedding, image_embedding, binary_embedding], dim=1)
 
-        # Classify: same MO or different MO?
-        similarity = self.classifier(diff)          # (batch, 1)
+        # Fuse into the final MO vector
+        fused_mo_vector = self.fusion_layer(combined_embeddings)
+        return fused_mo_vector
 
-        return similarity.squeeze(1)               # (batch,)
-
-    def get_mo_vector(self, pattern):
+    def forward(self, incident_a, incident_b):
         """
-        Returns the raw MO vector for a crime pattern.
-        Used during inference to compare crimes directly.
+        The main forward pass of the Siamese network.
+        """
+        # Unpack data for Incident A
+        log_a, timed_img_a, static_img_a, bin_a = incident_a
+        # Unpack data for Incident B
+        log_b, timed_img_b, static_img_b, bin_b = incident_b
+
+        # Process each incident to get its final MO vector
+        mo_vector_a = self.forward_one(log_a, timed_img_a, static_img_a, bin_a)
+        mo_vector_b = self.forward_one(log_b, timed_img_b, static_img_b, bin_b)
+
+        # Compute the absolute difference between the two MO vectors
+        diff = torch.abs(mo_vector_a - mo_vector_b)
+
+        # Pass the difference through the classifier to get the similarity score
+        similarity = self.classifier(diff)
+        
+        return similarity.squeeze(1)
+
+    def compute_similarity(self, incident_a, incident_b):
+        """
+        High-level wrapper for inference.
         """
         with torch.no_grad():
-            return self.forward_one(pattern)
+            return self.forward(incident_a, incident_b)
 
-    def compute_similarity(self, pattern_a, pattern_b):
-        """
-        Returns similarity score between two crime patterns.
-        Score closer to 1.0 = same MO (same attacker)
-        Score closer to 0.0 = different MO (unrelated)
-        """
-        with torch.no_grad():
-            return self.forward(pattern_a, pattern_b)
 
 
 # ─── MODEL SUMMARY ────────────────────────────────────────────────────────────

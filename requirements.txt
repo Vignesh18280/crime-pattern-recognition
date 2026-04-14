@@ -13,3 +13,4 @@ ipykernel>=6.0.0
 Flask>=2.3.0
 Flask-Cors>=4.0.0
 waitress>=2.1.0
+Pillow>=10.0.0

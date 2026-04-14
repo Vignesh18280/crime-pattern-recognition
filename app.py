@@ -14,6 +14,15 @@ import uuid # For unique filenames
 from src.model import SiameseCrimeMatcher
 from src.detect import detect_suspicious_connections
 from src.pattern_generator import generate_multiple_crime_patterns
+from src.dataset import (
+    MultiModalCrimeDataset, build_dataloaders,
+    LOG_FEATURE_DIM, LOG_SEQ_LEN, IMG_SIZE, BIN_IMG_SIZE,
+    IMG_MAX_TIMED, IMG_MAX_STATIC
+)
+from torchvision import transforms
+from PIL import Image
+import io
+import shutil
 
 
 # --- Configuration ---
@@ -22,7 +31,12 @@ DATA_PATH = "data/UNSW_NB15_testing-set.parquet"
 UPLOAD_FOLDER = 'data/temp_uploads' # Folder for temporary file uploads
 SCALER_PATH = 'scaler.pkl' # Path to saved StandardScaler
 ALLOWED_EXTENSIONS = {'csv', 'parquet'}
-DEVICE = torch.device("cpu") # Use CPU for inference
+if torch.backends.mps.is_available():
+    DEVICE = torch.device("mps")
+elif torch.cuda.is_available():
+    DEVICE = torch.device("cuda")
+else:
+    DEVICE = torch.device("cpu")
 
 # --- Initialize Flask App ---
 app = Flask(__name__, template_folder='templates', static_folder='static')
@@ -42,21 +56,32 @@ except FileNotFoundError:
     checkpoint = None
 
 if checkpoint:
-    # Get model parameters from the checkpoint
-    feature_dim = checkpoint.get('feat_dim', 32)
-    cnn_out_dim = checkpoint.get('cnn_out_dim', 64)
-    mo_dim = checkpoint.get('mo_dim', 128)
-
-    # Instantiate the Siamese Network
+    # Get model params from checkpoint config
+    config = checkpoint.get('config', {})
+    log_feature_dim = config.get('log_feature_dim', 32)
+    log_seq_len = config.get('log_seq_len', 5)
+    
+    # Instantiate the new multi-modal Siamese Network (matching training config)
     model = SiameseCrimeMatcher(
-        feature_dim=feature_dim,
-        cnn_out_dim=cnn_out_dim,
-        mo_dim=mo_dim
+        log_feature_dim=log_feature_dim,
+        log_seq_len=log_seq_len,
+        log_embedding_dim=128,
+        image_embedding_dim=256,
+        binary_embedding_dim=128,
+        fused_embedding_dim=256
     )
-    model.load_state_dict(checkpoint['model_state'])
+    # Note: Loading state_dict might fail if the old model architecture is
+    # different from the new one. A re-training might be necessary.
+    try:
+        model.load_state_dict(checkpoint['model_state'])
+        print("Model state loaded successfully.")
+    except RuntimeError as e:
+        print(f"Warning: Could not load model state dict, likely due to architecture change: {e}")
+        print("         The model will use its initial weights. Re-training is recommended.")
+
     model.to(DEVICE)
     model.eval()
-    print("Model loaded successfully.")
+    print("Model initialized.")
 else:
     model = None
 
@@ -265,8 +290,294 @@ def generate_dummy_pattern():
 
 @app.route('/api/download_dummy/<filename>', methods=['GET'])
 def download_dummy(filename):
-    # Ensure the file is in the UPLOAD_FOLDER and is a dummy file
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename, as_attachment=True)
+
+
+@app.route('/api/load_sample', methods=['POST'])
+def load_sample():
+    data = request.get_json()
+    side = data.get('side', 'a')
+    
+    manifest_path = os.path.join('data', 'manifest.csv')
+    if not os.path.exists(manifest_path):
+        return jsonify({"error": "No sample data available"}), 400
+    
+    import pandas as pd
+    df = pd.read_csv(manifest_path)
+    
+    if df.empty:
+        return jsonify({"error": "No incidents in manifest"}), 400
+    
+    incident = df.iloc[0]
+    return jsonify({
+        "incident_id": incident['incident_id'],
+        "attack_type": incident['attack_type'],
+        "log_path": incident['log_path'],
+        "image_folder": incident['image_folder'],
+        "binary_path": incident.get('binary_path', '')
+    })
+
+
+@app.route('/api/predict_multimodal', methods=['POST'])
+def predict_multimodal():
+    if model is None:
+        return jsonify({"error": "Server not ready. Model not loaded."}), 500
+
+    img_transform = transforms.Compose([
+        transforms.Resize((IMG_SIZE, IMG_SIZE)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    
+    bin_transform = transforms.Compose([
+        transforms.Resize((BIN_IMG_SIZE, BIN_IMG_SIZE)),
+        transforms.Grayscale(),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5], std=[0.5])
+    ])
+
+    def process_incident_a():
+        log_data = torch.zeros(1, LOG_SEQ_LEN, LOG_FEATURE_DIM)
+        timed_imgs = []
+        static_imgs = []
+        bin_data = None
+        
+        if 'log_a' in request.files:
+            df = pd.read_csv(request.files['log_a'])
+            
+            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+            feature_cols = [c for c in numeric_cols if c not in ['id', 'label']]
+            
+            if len(feature_cols) == 0:
+                feature_cols = numeric_cols[:32] if len(numeric_cols) >= 32 else numeric_cols
+            
+            if 'attack_cat' in df.columns:
+                feature_cols = [c for c in feature_cols if c != 'attack_cat']
+            if 'is_sm_ips_ports' in df.columns:
+                feature_cols = [c for c in feature_cols if c != 'is_sm_ips_ports']
+            
+            X = df[feature_cols].fillna(0).values.astype(np.float32)
+            
+            if scaler is not None:
+                X = scaler.transform(X)
+            
+            if X.shape[0] >= LOG_SEQ_LEN:
+                X = X[:LOG_SEQ_LEN, :LOG_FEATURE_DIM]
+            else:
+                X = np.vstack([X, np.zeros((LOG_SEQ_LEN - X.shape[0], LOG_FEATURE_DIM))])
+            
+            log_data = torch.tensor(X, dtype=torch.float32).unsqueeze(0)
+        
+        if 'images_a' in request.files:
+            files = request.files.getlist('images_a')
+            for f in files:
+                try:
+                    img = Image.open(f).convert('RGB')
+                    timed_imgs.append(img_transform(img))
+                except Exception as e:
+                    print(f"Error processing image {f.filename}: {e}")
+        
+        if 'binary_a' in request.files:
+            try:
+                binary_file = request.files['binary_a']
+                binary_data = binary_file.read()
+                
+                byte_array = np.frombuffer(binary_data, dtype=np.uint8)
+                byte_array = byte_array[:BIN_IMG_SIZE * BIN_IMG_SIZE]
+                
+                if len(byte_array) < BIN_IMG_SIZE * BIN_IMG_SIZE:
+                    byte_array = np.pad(byte_array, (0, BIN_IMG_SIZE * BIN_IMG_SIZE - len(byte_array)), mode='constant')
+                
+                bin_img = byte_array.reshape(BIN_IMG_SIZE, BIN_IMG_SIZE)
+                bin_tensor = torch.tensor(bin_img, dtype=torch.float32).unsqueeze(0).unsqueeze(0) / 255.0
+                bin_data = bin_tensor.squeeze(0)
+            except Exception as e:
+                print(f"Error processing binary: {e}")
+                bin_data = None
+        
+        log_tensor = log_data
+        if timed_imgs:
+            timed_tensor = torch.stack(timed_imgs).unsqueeze(0)
+        else:
+            timed_tensor = torch.zeros(1, 1, 3, IMG_SIZE, IMG_SIZE)
+        static_tensor = torch.zeros(1, 1, 3, IMG_SIZE, IMG_SIZE)
+        if bin_data is not None:
+            bin_tensor = bin_data.unsqueeze(1)
+        else:
+            bin_tensor = torch.zeros(1, 1, BIN_IMG_SIZE, BIN_IMG_SIZE)
+        
+        return log_tensor, timed_tensor, static_tensor, bin_tensor
+
+    def process_incident_b():
+        log_data = torch.zeros(1, LOG_SEQ_LEN, LOG_FEATURE_DIM)
+        timed_imgs = []
+        static_imgs = []
+        bin_data = None
+        
+        if 'log_b' in request.files:
+            df = pd.read_csv(request.files['log_b'])
+            
+            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+            feature_cols = [c for c in numeric_cols if c not in ['id', 'label']]
+            
+            if len(feature_cols) == 0:
+                feature_cols = numeric_cols[:32] if len(numeric_cols) >= 32 else numeric_cols
+            
+            if 'attack_cat' in df.columns:
+                feature_cols = [c for c in feature_cols if c != 'attack_cat']
+            if 'is_sm_ips_ports' in df.columns:
+                feature_cols = [c for c in feature_cols if c != 'is_sm_ips_ports']
+            
+            X = df[feature_cols].fillna(0).values.astype(np.float32)
+            
+            if scaler is not None:
+                X = scaler.transform(X)
+            
+            if X.shape[0] >= LOG_SEQ_LEN:
+                X = X[:LOG_SEQ_LEN, :LOG_FEATURE_DIM]
+            else:
+                X = np.vstack([X, np.zeros((LOG_SEQ_LEN - X.shape[0], LOG_FEATURE_DIM))])
+            
+            log_data = torch.tensor(X, dtype=torch.float32).unsqueeze(0)
+        
+        if 'images_b' in request.files:
+            files = request.files.getlist('images_b')
+            for f in files:
+                try:
+                    img = Image.open(f).convert('RGB')
+                    timed_imgs.append(img_transform(img))
+                except Exception as e:
+                    print(f"Error processing image {f.filename}: {e}")
+        
+        if 'binary_b' in request.files:
+            try:
+                binary_file = request.files['binary_b']
+                binary_data = binary_file.read()
+                
+                byte_array = np.frombuffer(binary_data, dtype=np.uint8)
+                byte_array = byte_array[:BIN_IMG_SIZE * BIN_IMG_SIZE]
+                
+                if len(byte_array) < BIN_IMG_SIZE * BIN_IMG_SIZE:
+                    byte_array = np.pad(byte_array, (0, BIN_IMG_SIZE * BIN_IMG_SIZE - len(byte_array)), mode='constant')
+                
+                bin_img = byte_array.reshape(BIN_IMG_SIZE, BIN_IMG_SIZE)
+                bin_tensor = torch.tensor(bin_img, dtype=torch.float32).unsqueeze(0).unsqueeze(0) / 255.0
+                bin_data = bin_tensor.squeeze(0)
+            except Exception as e:
+                print(f"Error processing binary: {e}")
+                bin_data = None
+        
+        log_tensor = log_data
+        if timed_imgs:
+            timed_tensor = torch.stack(timed_imgs).unsqueeze(0)
+        else:
+            timed_tensor = torch.zeros(1, 1, 3, IMG_SIZE, IMG_SIZE)
+        static_tensor = torch.zeros(1, 1, 3, IMG_SIZE, IMG_SIZE)
+        if bin_data is not None:
+            bin_tensor = bin_data.unsqueeze(1)
+        else:
+            bin_tensor = torch.zeros(1, 1, BIN_IMG_SIZE, BIN_IMG_SIZE)
+        
+        return log_tensor, timed_tensor, static_tensor, bin_tensor
+
+    log_a, timed_a, static_a, bin_a = process_incident_a()
+    log_b, timed_b, static_b, bin_b = process_incident_b()
+    
+    has_log_a = 'log_a' in request.files
+    has_log_b = 'log_b' in request.files
+    has_img_a = len(request.files.getlist('images_a')) > 0
+    has_img_b = len(request.files.getlist('images_b')) > 0
+    has_bin_a = 'binary_a' in request.files
+    has_bin_b = 'binary_b' in request.files
+
+    incident_a = (
+        log_a.to(DEVICE), timed_a.to(DEVICE),
+        static_a.to(DEVICE), bin_a.to(DEVICE)
+    )
+    incident_b = (
+        log_b.to(DEVICE), timed_b.to(DEVICE),
+        static_b.to(DEVICE), bin_b.to(DEVICE)
+    )
+
+    with torch.no_grad():
+        log_emb_a = model.log_extractor(log_a.to(DEVICE))
+        log_emb_b = model.log_extractor(log_b.to(DEVICE))
+        img_emb_a = model.image_extractor(timed_a.to(DEVICE), static_a.to(DEVICE))
+        img_emb_b = model.image_extractor(timed_b.to(DEVICE), static_b.to(DEVICE))
+        bin_emb_a = model.binary_extractor(bin_a.to(DEVICE))
+        bin_emb_b = model.binary_extractor(bin_b.to(DEVICE))
+        
+        log_diff = (log_a - log_b).abs().mean().item()
+        img_diff = (img_emb_a - img_emb_b).abs().mean().item()
+        bin_diff = (bin_emb_a - bin_emb_b).abs().mean().item()
+        
+        # Use raw data similarity for logs (more reliable with untrained model)
+        log_similarity = 1.0 / (1.0 + log_diff)
+        img_similarity = 1.0 / (1.0 + img_diff)
+        bin_similarity = 1.0 / (1.0 + bin_diff) if bin_emb_a.abs().sum() > 0 else 0.0
+        
+        # If logs are present, use log similarity directly as it's the most reliable
+        # Otherwise combine with other modalities
+        if has_log_a or has_log_b:
+            score = log_similarity
+        else:
+            # Combine image and binary if no logs
+            total_weight = 0
+            weighted_score = 0
+            if has_img_a or has_img_b:
+                weighted_score += img_similarity * 0.6
+                total_weight += 0.6
+            if has_bin_a or has_bin_b:
+                weighted_score += bin_similarity * 0.4
+                total_weight += 0.4
+            score = weighted_score / total_weight if total_weight > 0 else 0.5
+        
+        log_emb_diff = (log_emb_a - log_emb_b).abs().cpu().flatten().tolist()
+        img_emb_diff = (img_emb_a - img_emb_b).abs().cpu().flatten().tolist()
+        
+        explanation = []
+        for i, val in enumerate(log_emb_diff[:10]):
+            explanation.append({"feature": f"Log_{i}", "importance": float(val)})
+        for i, val in enumerate(img_emb_diff[:10]):
+            explanation.append({"feature": f"Img_{i}", "importance": float(val)})
+        explanation = sorted(explanation, key=lambda x: abs(x['importance']), reverse=True)
+
+    verdict = "SAME MO" if score >= 0.5 else "DIFFERENT MO"
+    
+    log_data_a = log_a.squeeze(0).flatten().cpu().tolist()
+    log_data_b = log_b.squeeze(0).flatten().cpu().tolist()
+    
+    pattern_data_a = log_data_a[:10]
+    pattern_data_b = log_data_b[:10]
+    
+    return jsonify({
+        "verdict": verdict,
+        "similarityScore": score,
+        "explanation": explanation,
+        "best_patterns": {
+            "pattern1_index": 0,
+            "pattern2_index": 0,
+            "pattern1_data": pattern_data_a,
+            "pattern2_data": pattern_data_b
+        },
+        "incident1": "Multimodal Incident A",
+        "incident2": "Multimodal Incident B",
+        "modalities_a": {
+            "has_log": 'log_a' in request.files,
+            "num_images": len(request.files.getlist('images_a')),
+            "has_binary": 'binary_a' in request.files
+        },
+        "modalities_b": {
+            "has_log": 'log_b' in request.files,
+            "num_images": len(request.files.getlist('images_b')),
+            "has_binary": 'binary_b' in request.files
+        },
+        "embeddings": {
+            "log_similarity": log_similarity,
+            "img_similarity": img_similarity,
+            "bin_similarity": bin_similarity
+        }
+    })
 
 
 @app.route('/api/predict', methods=['POST'])

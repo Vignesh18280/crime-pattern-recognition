@@ -23,8 +23,8 @@ from model   import SiameseCrimeMatcher, print_model_summary
 
 RESULTS_DIR   = "results"
 CHECKPOINT    = "results/best_model.pth"
-EPOCHS        = 30
-BATCH_SIZE    = 32
+EPOCHS        = 10
+BATCH_SIZE    = 8
 LEARNING_RATE = 0.0003   # fixed: was too high at 0.001
 FEATURE_DIM   = 32       # matches dataset.py
 SEQ_LEN       = 5
@@ -44,20 +44,31 @@ def train_one_epoch(model, loader, optimizer, criterion, device):
     model.train()
     total_loss, total_acc = 0.0, 0.0
 
-    for batch_a, batch_b, labels in tqdm(loader, desc="  Training", leave=False):
-        batch_a = batch_a.to(device)
-        batch_b = batch_b.to(device)
-        labels  = labels.to(device)
+    for batch in tqdm(loader, desc="  Training", leave=False):
+        # Unpack the multi-modal batch
+        log_a, timed_a, static_a, bin_a, \
+        log_b, timed_b, static_b, bin_b, labels = batch
+        
+        # Move all tensors to the selected device
+        incident_a = (
+            log_a.to(device), timed_a.to(device),
+            static_a.to(device), bin_a.to(device)
+        )
+        incident_b = (
+            log_b.to(device), timed_b.to(device),
+            static_b.to(device), bin_b.to(device)
+        )
+        labels = labels.to(device)
 
         optimizer.zero_grad()
-        scores = model(batch_a, batch_b)
-        loss   = criterion(scores, labels)
+        scores = model(incident_a, incident_b)
+        loss = criterion(scores, labels)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
 
         total_loss += loss.item()
-        total_acc  += compute_accuracy(scores.detach(), labels.detach())
+        total_acc += compute_accuracy(scores.detach(), labels.detach())
 
     return total_loss / len(loader), total_acc / len(loader)
 
@@ -69,16 +80,27 @@ def validate(model, loader, criterion, device):
     total_loss, total_acc = 0.0, 0.0
 
     with torch.no_grad():
-        for batch_a, batch_b, labels in tqdm(loader, desc="  Validating", leave=False):
-            batch_a = batch_a.to(device)
-            batch_b = batch_b.to(device)
-            labels  = labels.to(device)
+        for batch in tqdm(loader, desc="  Validating", leave=False):
+            # Unpack the multi-modal batch
+            log_a, timed_a, static_a, bin_a, \
+            log_b, timed_b, static_b, bin_b, labels = batch
 
-            scores = model(batch_a, batch_b)
-            loss   = criterion(scores, labels)
+            # Move all tensors to the selected device
+            incident_a = (
+                log_a.to(device), timed_a.to(device),
+                static_a.to(device), bin_a.to(device)
+            )
+            incident_b = (
+                log_b.to(device), timed_b.to(device),
+                static_b.to(device), bin_b.to(device)
+            )
+            labels = labels.to(device)
+
+            scores = model(incident_a, incident_b)
+            loss = criterion(scores, labels)
 
             total_loss += loss.item()
-            total_acc  += compute_accuracy(scores, labels)
+            total_acc += compute_accuracy(scores, labels)
 
     return total_loss / len(loader), total_acc / len(loader)
 
@@ -150,20 +172,32 @@ def plot_similarity_distribution(model, val_loader, device):
 
 def train():
     os.makedirs(RESULTS_DIR, exist_ok=True)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.backends.mps.is_available():
+        device = torch.device("mps")
+    elif torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
     print(f"\n[train] Device: {device}")
 
-    # Data
-    train_loader, val_loader, feat_dim, n_cls, cls_names = build_dataloaders(
-        batch_size=BATCH_SIZE, seq_len=SEQ_LEN)
+    # Data - loads real UNSW-NB15 data
+    train_loader, val_loader, data_config = build_dataloaders(batch_size=BATCH_SIZE)
+    
+    if not train_loader:
+        print("[train] Dataloader generation failed. Aborting training.")
+        print("[train] Make sure data/UNSW_NB15_training-set.parquet exists")
+        return None, None, None, None
 
-    # Model — smaller for our dataset size
+    # Model
     model = SiameseCrimeMatcher(
-        feature_dim = feat_dim,
-        cnn_out_dim = 64,     # reduced from 128
-        mo_dim      = 128     # reduced from 256
+        log_feature_dim=data_config.get('log_feature_dim', 31),
+        log_seq_len=data_config.get('log_seq_len', 5),
+        log_embedding_dim=128,
+        image_embedding_dim=256,
+        binary_embedding_dim=128,
+        fused_embedding_dim=256
     ).to(device)
-    print_model_summary(model, feature_dim=feat_dim, seq_len=SEQ_LEN)
+    # print_model_summary(model) # This needs to be updated for the new model
 
     # Loss + optimizer
     criterion = nn.BCELoss()
@@ -194,14 +228,12 @@ def train():
 
         if val_acc > best_val:
             best_val = val_acc
+            # Note: Saving hyperparameters for the new model
             torch.save({
                 "epoch":       epoch,
                 "model_state": model.state_dict(),
                 "val_acc":     val_acc,
-                "feat_dim":    feat_dim,
-                "cls_names":   cls_names,
-                "cnn_out_dim": 64,
-                "mo_dim":      128,
+                "config":      data_config
             }, CHECKPOINT)
             print(f"  ✅ Best model saved (val_acc: {val_acc:.2%})")
         print()
@@ -210,7 +242,8 @@ def train():
     print(f"[train] Done in {elapsed/60:.1f} min | Best val acc: {best_val:.2%}")
 
     plot_training_curves(history)
-    plot_similarity_distribution(model, val_loader, device)
+    # plot_similarity_distribution needs to be updated or disabled for multi-modal
+    # plot_similarity_distribution(model, val_loader, device)
 
     return model, history, val_loader, device
 

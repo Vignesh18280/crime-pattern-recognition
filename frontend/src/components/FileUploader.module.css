@@ -53,3 +53,81 @@
 .buttonContainer {
   text-align: center;
 }
+
+.incidentBox {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1rem;
+  background: rgba(var(--background-rgb), 0.5);
+  border-radius: 0.75rem;
+  border: 1px solid rgb(var(--border-rgb));
+}
+
+.modalitySection {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.modalityDropzone {
+  border: 2px dashed rgb(var(--border-rgb));
+  border-radius: 0.5rem;
+  padding: 1rem;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.2s, background-color 0.2s;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.modalityDropzone.active {
+  border-color: rgb(var(--primary-rgb));
+  background-color: rgba(var(--primary-rgb), 0.1);
+}
+
+.modalityDropzone svg {
+  color: rgb(var(--muted-rgb));
+  margin-bottom: 0.5rem;
+}
+
+.modalityDropzone p {
+  color: rgb(var(--muted-rgb));
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+.fileList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.fileItem {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  background: rgba(var(--primary-rgb), 0.1);
+  border-radius: 0.25rem;
+  font-size: 0.75rem;
+}
+
+.fileName {
+  color: rgb(var(--foreground-rgb));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+}
+
+.removeBtn {
+  background: none;
+  border: none;
+  color: rgb(var(--destructive-rgb));
+  cursor: pointer;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+}
