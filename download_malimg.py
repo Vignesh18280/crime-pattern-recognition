@@ -48,7 +48,7 @@ def download_unsk_nb15(api):
             print(f"[download] {dataset} failed: {e}")
             continue
     
-print("[download] All Kaggle failed, trying HuggingFace...")
+    print("[download] All Kaggle failed, trying HuggingFace...")
     try:
         from datasets import load_dataset
         

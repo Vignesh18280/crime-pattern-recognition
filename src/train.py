@@ -173,6 +173,9 @@ def plot_similarity_distribution(model, val_loader, device):
 def train():
     os.makedirs(RESULTS_DIR, exist_ok=True)
     # Colab typically has CUDA GPU
+    print(f"[train] CUDA available: {torch.cuda.is_available()}")
+    print(f"[train] MPS available: {torch.backends.mps.is_available()}")
+    
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif torch.backends.mps.is_available():
