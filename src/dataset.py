@@ -396,11 +396,19 @@ class MultiModalCrimeDataset(Dataset):
 def create_multi_modal_pairs(manifest_df, pairs_per_class=100):
     """Creates positive and negative pairs from the incident manifest."""
     pairs = []
+    manifest_df = manifest_df.copy()
     manifest_df['label'] = LabelEncoder().fit_transform(manifest_df['attack_type'])
     
-    for label in manifest_df['label'].unique():
+    # Get unique labels and incidents
+    unique_labels = manifest_df['label'].unique()
+    print(f"[dataset] Unique labels: {unique_labels}")
+    print(f"[dataset] Manifest rows: {len(manifest_df)}")
+    
+    for label in unique_labels:
         same_class_incidents = manifest_df[manifest_df['label'] == label]['incident_id'].tolist()
         diff_class_incidents = manifest_df[manifest_df['label'] != label]['incident_id'].tolist()
+        
+        print(f"[dataset] Label {label}: same_class={len(same_class_incidents)}, diff_class={len(diff_class_incidents)}")
 
         if len(same_class_incidents) < 2 or len(diff_class_incidents) < 1:
             continue
@@ -415,7 +423,8 @@ def create_multi_modal_pairs(manifest_df, pairs_per_class=100):
             id_a = np.random.choice(same_class_incidents)
             id_b = np.random.choice(diff_class_incidents)
             pairs.append((id_a, id_b, 0.0))
-            
+    
+    print(f"[dataset] Created {len(pairs)} pairs")
     np.random.shuffle(pairs)
     return pairs
 
@@ -474,6 +483,13 @@ def build_dataloaders(batch_size=32, test_size=0.2):
     # Create datasets with scaler
     train_ds = MultiModalCrimeDataset(train_pairs, manifest_df, data_dir=DATA_DIR, scaler=scaler)
     val_ds = MultiModalCrimeDataset(val_pairs, manifest_df, data_dir=DATA_DIR, scaler=scaler)
+    
+    # Check dataset sizes
+    if len(train_ds) == 0 or len(val_ds) == 0:
+        print(f"[dataset] ERROR: Empty dataset! train={len(train_ds)}, val={len(val_ds)}")
+        print(f"[dataset] Pairs: {len(pairs)}, train_pairs: {len(train_pairs)}, val_pairs: {len(val_pairs)}")
+        print(f"[dataset] Manifest entries: {len(manifest_df)}")
+        return None, None, {}
     
     # Create dataloaders
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
