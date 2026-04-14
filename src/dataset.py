@@ -393,6 +393,40 @@ class MultiModalCrimeDataset(Dataset):
         
         return (*data_a, *data_b, torch.tensor(label, dtype=torch.float32))
 
+def create_pairs_from_malimg(data_dir, pairs_per_class=50):
+    """Create pairs from malimg folders."""
+    malimg_dir = os.path.join(data_dir, "malimg")
+    
+    if not os.path.exists(malimg_dir):
+        print(f"[dataset] ERROR: malimg folder not found at {malimg_dir}")
+        return []
+    
+    families = [f for f in os.listdir(malimg_dir) if os.path.isdir(os.path.join(malimg_dir, f))]
+    print(f"[dataset] Found {len(families)} malware families: {families[:5]}...")
+    
+    if len(families) < 2:
+        return []
+    
+    # Create pairs: same family = positive, different = negative
+    pairs = []
+    for i in range(pairs_per_class):
+        # Positive pairs (same family)
+        fam_a = np.random.choice(families)
+        fam_b = np.random.choice([f for f in families if f == fam_a] or [fam_a])
+        if fam_a == fam_b:
+            pairs.append((fam_a, fam_b, 1.0))
+        
+        # Negative pairs (different families)
+        fam_a = np.random.choice(families)
+        fam_b = np.random.choice([f for f in families if f != fam_a])
+        if fam_b:
+            pairs.append((fam_a, fam_b, 0.0))
+    
+    print(f"[dataset] Created {len(pairs)} pairs")
+    np.random.shuffle(pairs)
+    return pairs
+
+
 def create_multi_modal_pairs(manifest_df, pairs_per_class=100):
     """Creates positive and negative pairs from the incident manifest."""
     pairs = []
@@ -464,16 +498,30 @@ def build_dataloaders(batch_size=32, test_size=0.2):
     except Exception as e:
         print(f"[dataset] Warning: Could not create scaler: {e}")
     
+    # Try manifest first, fallback to malimg
     manifest_path = os.path.join(DATA_DIR, 'manifest.csv')
-    if not os.path.exists(manifest_path):
-        print(f"Error: Manifest file not found at {manifest_path}")
-        print("Please run generate_multimodal_dataset.py first.")
-        return None, None, {}
-
-    manifest_df = pd.read_csv(manifest_path)
+    pairs = []
+    manifest_df = None
     
-    # Create pairs
-    pairs = create_multi_modal_pairs(manifest_df)
+    if os.path.exists(manifest_path):
+        manifest_df = pd.read_csv(manifest_path)
+        if len(manifest_df) > 0:
+            pairs = create_multi_modal_pairs(manifest_df)
+    
+    # Fallback to malimg if manifest is empty
+    if len(pairs) == 0:
+        print("[dataset] Using malimg families for training pairs")
+        pairs = create_pairs_from_malimg(DATA_DIR, pairs_per_class=50)
+        # Create a simple manifest from malimg
+        malimg_dir = os.path.join(DATA_DIR, "malimg")
+        if os.path.exists(malimg_dir):
+            families = [f for f in os.listdir(malimg_dir) if os.path.isdir(os.path.join(malimg_dir, f))]
+            data = [{"incident_id": f, "attack_type": f, "image_folder": f"malimg/{f}", "log_path": "", "binary_path": ""} for f in families]
+            manifest_df = pd.DataFrame(data)
+    
+    if len(pairs) == 0:
+        print("[dataset] ERROR: No pairs created!")
+        return None, None, {}
     
     # Split data
     split_idx = int(len(pairs) * (1 - test_size))
