@@ -24,6 +24,22 @@ def download_with_kaggle():
         return None
 
 
+def download_unsk_nb15(api):
+    """Download UNSW-NB15 dataset for logs."""
+    parquet_path = os.path.join(DATA_DIR, "UNSW_NB15_training-set.parquet")
+    
+    if os.path.exists(parquet_path):
+        print(f"[download] UNSW-NB15 exists: {parquet_path}")
+        return
+    
+    print("[download] Downloading UNSW-NB15...")
+    try:
+        api.dataset_download_files('mhmadabdalhamid/unsw-nb15', path=DATA_DIR, unzip=True)
+        print(f"[download] Downloaded UNSW-NB15")
+    except Exception as e:
+        print(f"[download] UNSW-NB15 failed: {e}")
+
+
 def download_malimg(api):
     """Download Malimg malware dataset."""
     malimg_dir = os.path.join(DATA_DIR, "malimg")
@@ -98,8 +114,9 @@ if __name__ == "__main__":
     api = download_with_kaggle()
     
     if api:
-        download_malimg(api)
-        # download_weapons(api)  # Optional - larger dataset
+        # Download datasets
+        download_unsk_nb15(api)  # UNSW-NB15 for logs
+        download_malimg(api)      # Malimg for images
     else:
         print("[download] Using placeholder images")
         create_crime_scene_images()
