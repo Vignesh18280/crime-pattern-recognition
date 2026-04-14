@@ -245,9 +245,20 @@ def get_crime_pattern_by_category(category):
     return pattern_tensor, final_feature_names
 
 # --- API Endpoints ---
+# Serve React frontend build
+FRONTEND_DIST = os.path.join(os.path.dirname(__file__), "frontend", "dist")
+
 @app.route('/')
 def index():
+    if os.path.exists(os.path.join(FRONTEND_DIST, "index.html")):
+        return send_from_directory(FRONTEND_DIST, "index.html")
     return render_template('index.html')
+
+@app.route('/<path:path>')
+def serve_static(path):
+    if os.path.exists(os.path.join(FRONTEND_DIST, path)):
+        return send_from_directory(FRONTEND_DIST, path)
+    return send_from_directory(FRONTEND_DIST, "index.html")
 
 @app.route('/api/attack_categories', methods=['GET'])
 def get_attack_categories():
